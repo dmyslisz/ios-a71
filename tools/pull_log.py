@@ -59,10 +59,10 @@ else:
     print("UWAGA: Pobrany plik jest za krotki.")
 
 print(f"\nGotowe! Pelny log zapisano w: {os.path.abspath(txt_file)}")
-print("\n=== WPISY DOTYCZACE GPU / ADRENO ===")
+print("\n=== WPISY DOTYCZACE GPU / ADRENO / ZASILANIA ===")
 with open(txt_file, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
-        if any(k in line for k in ["SWEET GPU", "Adreno", "KGSL", "GPUCC", "GDSC"]):
+        if any(k in line for k in ["SWEET GPU", "SWEET RPMH", "Adreno", "KGSL", "GPUCC", "GDSC"]):
             print("  " + line.strip())
 
 print("\n=== WPISY DOTYCZACE DOTYKU ===")
