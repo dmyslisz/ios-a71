@@ -60,13 +60,17 @@ else:
 
 print(f"\nGotowe! Pelny log zapisano w: {os.path.abspath(txt_file)}")
 print("\n=== WPISY DOTYCZACE GPU / ADRENO / ZASILANIA ===")
+sys.stdout.flush()
 with open(txt_file, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
         if any(k in line for k in ["SWEET GPU", "SWEET RPMH", "Adreno", "KGSL", "GPUCC", "GDSC"]):
-            print("  " + line.strip())
+            sys.stdout.buffer.write(("  " + line.strip() + "\n").encode("utf-8", errors="replace"))
+sys.stdout.buffer.flush()
 
 print("\n=== WPISY DOTYCZACE DOTYKU ===")
+sys.stdout.flush()
 with open(txt_file, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
         if any(k in line for k in ["TOUCH", "sec_ts", "S6SY", "bus pins"]):
-            print("  " + line.strip())
+            sys.stdout.buffer.write(("  " + line.strip() + "\n").encode("utf-8", errors="replace"))
+sys.stdout.buffer.flush()

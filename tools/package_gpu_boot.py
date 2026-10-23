@@ -7,15 +7,18 @@ def remove_readonly(func, path, excinfo):
     except Exception:
         pass
 
+user_home = os.path.expanduser('~')
+downloads = os.path.join(user_home, 'Downloads')
+
 if len(sys.argv) > 1:
     zip_path = sys.argv[1]
 else:
-    candidates = glob.glob(r'C:\Users\dawid\Downloads\xnu-kernel*.zip')
+    candidates = glob.glob(os.path.join(downloads, 'xnu-kernel*.zip'))
     if candidates:
         candidates.sort(key=os.path.getmtime)
         zip_path = candidates[-1]
     else:
-        zip_path = r'C:\Users\dawid\Downloads\xnu-kernel.zip'
+        zip_path = os.path.join(downloads, 'xnu-kernel.zip')
 
 print(f"Extracting kernel from {zip_path}...")
 os.makedirs('build', exist_ok=True)
@@ -41,8 +44,8 @@ subprocess.run(['python', 'tools/mkadt.py', 'build/a71_highmem.adt', '--highmem'
 print("\n2. Packaging SWEETXNU payload...")
 subprocess.run(['python', 'tools/mkpayload.py', kernel_path, 'build/a71_highmem.adt', 'build/a71_payload.bin', '--cmdline', cmdline], check=True)
 
-out_img = r'C:\Users\dawid\Downloads\shim-boot.img'
-out_tar = r'C:\Users\dawid\Downloads\shim-boot.tar'
+out_img = os.path.join(downloads, 'shim-boot.img')
+out_tar = os.path.join(downloads, 'shim-boot.tar')
 
 print(f"\n3. Building boot.img: {out_img}...")
 subprocess.run(['python', 'tools/mkbootv2.py', '--kernel', 'shim/out/Image', '--ramdisk', 'build/a71_payload.bin', '--dtb', 'dtb/boot_unpacked/dtb', '-o', out_img], check=True)
