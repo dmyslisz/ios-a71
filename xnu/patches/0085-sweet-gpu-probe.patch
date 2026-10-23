@@ -27,7 +27,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu.c
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,214 @@
 +/*
 + * SWEET: Qualcomm Adreno 618 GPU bring-up probe for Samsung Galaxy A71 (SM7150).
 + *
@@ -122,6 +122,13 @@
 +sweet_gpu_probe(void)
 +{
 +	int enabled = 1;
++	vm_offset_t gcc = 0, gpucc = 0, kgsl = 0, gmu = 0;
++	uint32_t gcc_ahb = 0, gcc_memnoc = 0;
++	uint32_t cx_gdscr = 0, gx_gdscr = 0;
++	uint32_t ahb_cbcr = 0, gfx_cbcr = 0, gmu_cbcr = 0;
++	uint32_t final_gx = 0, final_gfx_clk = 0;
++	uint32_t rbbm_status = 0, rbbm_status3 = 0, vbif_reset = 0, cp_rb_base = 0;
++
 +	PE_parse_boot_argn("sweetgpu", &enabled, sizeof(enabled));
 +	if (!enabled) {
 +		printf("SWEET GPU: disabled by sweetgpu=0\n");
@@ -131,17 +138,18 @@
 +	printf("SWEET GPU: probing Qualcomm Adreno 618 subsystem...\n");
 +
 +	/* 1. GCC clocks to GPU subsystem */
-+	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
++	gcc = ml_io_map(GCC_PA, GCC_SIZE);
 +	if (gcc == 0) {
 +		printf("SWEET GPU: GCC map failed\n");
 +		return;
 +	}
-+	uint32_t gcc_ahb = gpu_rd(gcc, GCC_GPU_CFG_AHB_CBCR);
-+	uint32_t gcc_memnoc = gpu_rd(gcc, GCC_GPU_MEMNOC_GFX_CBCR);
++	gcc_ahb = gpu_rd(gcc, GCC_GPU_CFG_AHB_CBCR);
++	gcc_memnoc = gpu_rd(gcc, GCC_GPU_MEMNOC_GFX_CBCR);
 +	printf("SWEET GPU: GCC AHB CBCR 0x%08x (%s), MemNOC CBCR 0x%08x (%s)\n",
 +	    gcc_ahb, (gcc_ahb & CBCR_CLK_OFF) ? "off" : "on",
 +	    gcc_memnoc, (gcc_memnoc & CBCR_CLK_OFF) ? "off" : "on");
 +
++	/* Enable GCC AHB clock if off */
 +	if (gcc_ahb & CBCR_CLK_OFF) {
 +		gpu_wr(gcc, GCC_GPU_CFG_AHB_CBCR, gcc_ahb | CBCR_ENABLE);
 +		gpu_poll_clk_on(gcc, GCC_GPU_CFG_AHB_CBCR, "GCC AHB");
@@ -152,17 +160,17 @@
 +	}
 +
 +	/* 2. Map GPUCC */
-+	vm_offset_t gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);
++	gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);
 +	if (gpucc == 0) {
 +		printf("SWEET GPU: GPUCC map failed\n");
 +		return;
 +	}
 +
-+	uint32_t cx_gdscr = gpu_rd(gpucc, GPUCC_GPU_CX_GDSCR);
-+	uint32_t gx_gdscr = gpu_rd(gpucc, GPUCC_GPU_GX_GDSCR);
-+	uint32_t ahb_cbcr = gpu_rd(gpucc, GPUCC_AHB_CBCR);
-+	uint32_t gfx_cbcr = gpu_rd(gpucc, GPUCC_GX_GFX3D_CBCR);
-+	uint32_t gmu_cbcr = gpu_rd(gpucc, GPUCC_GMU_CBCR);
++	cx_gdscr = gpu_rd(gpucc, GPUCC_GPU_CX_GDSCR);
++	gx_gdscr = gpu_rd(gpucc, GPUCC_GPU_GX_GDSCR);
++	ahb_cbcr = gpu_rd(gpucc, GPUCC_AHB_CBCR);
++	gfx_cbcr = gpu_rd(gpucc, GPUCC_GX_GFX3D_CBCR);
++	gmu_cbcr = gpu_rd(gpucc, GPUCC_GMU_CBCR);
 +
 +	printf("SWEET GPU: initial GPUCC CX GDSC 0x%08x (%s), GX GDSC 0x%08x (%s)\n",
 +	    cx_gdscr, (cx_gdscr & GDSC_PWR_ON) ? "ON" : "OFF",
@@ -198,8 +206,8 @@
 +		delay(20);
 +	}
 +
-+	uint32_t final_gx = gpu_rd(gpucc, GPUCC_GPU_GX_GDSCR);
-+	uint32_t final_gfx_clk = gpu_rd(gpucc, GPUCC_GX_GFX3D_CBCR);
++	final_gx = gpu_rd(gpucc, GPUCC_GPU_GX_GDSCR);
++	final_gfx_clk = gpu_rd(gpucc, GPUCC_GX_GFX3D_CBCR);
 +	printf("SWEET GPU: post-power GX GDSC 0x%08x (%s), GFX3D CBCR 0x%08x (%s)\n",
 +	    final_gx, (final_gx & GDSC_PWR_ON) ? "ON" : "OFF",
 +	    final_gfx_clk, (final_gfx_clk & CBCR_CLK_OFF) ? "off" : "on");
@@ -211,27 +219,26 @@
 +	}
 +
 +	/* 7. Map and read Adreno 618 3D Core */
-+	vm_offset_t kgsl = ml_io_map(KGSL_3D0_PA, KGSL_3D0_SIZE);
++	kgsl = ml_io_map(KGSL_3D0_PA, KGSL_3D0_SIZE);
 +	if (kgsl == 0) {
 +		printf("SWEET GPU: KGSL 3D map failed\n");
 +		return;
 +	}
 +
-+	uint32_t rbbm_status = gpu_rd(kgsl, A6XX_RBBM_STATUS);
-+	uint32_t rbbm_status3 = gpu_rd(kgsl, A6XX_RBBM_STATUS3);
-+	uint32_t vbif_reset = gpu_rd(kgsl, A6XX_RBBM_VBIF_GX_RESET_STATUS);
-+	uint32_t cp_rb_base = gpu_rd(kgsl, A6XX_CP_RB_BASE);
++	rbbm_status = gpu_rd(kgsl, A6XX_RBBM_STATUS);
++	rbbm_status3 = gpu_rd(kgsl, A6XX_RBBM_STATUS3);
++	vbif_reset = gpu_rd(kgsl, A6XX_RBBM_VBIF_GX_RESET_STATUS);
++	cp_rb_base = gpu_rd(kgsl, A6XX_CP_RB_BASE);
 +
 +	printf("SWEET GPU: Adreno 618 core responding!\n");
 +	printf("SWEET GPU: RBBM_STATUS=0x%08x, STATUS3=0x%08x, VBIF_RESET=0x%08x, CP_RB_BASE=0x%08x\n",
 +	    rbbm_status, rbbm_status3, vbif_reset, cp_rb_base);
 +
 +	/* 8. Map and inspect GMU (Cortex-M4 management unit) */
-+	vm_offset_t gmu = ml_io_map(GMU_PA, GMU_SIZE);
++	gmu = ml_io_map(GMU_PA, GMU_SIZE);
 +	if (gmu != 0) {
 +		printf("SWEET GPU: GMU mapped at 0x%lx (reg0=0x%08x, reg4=0x%08x)\n",
 +		    (unsigned long)gmu, gpu_rd(gmu, 0), gpu_rd(gmu, 4));
 +	}
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
-+
