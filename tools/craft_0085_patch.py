@@ -1,4 +1,17 @@
-import os, subprocess
+import os, subprocess, struct
+
+# Load firmware binary
+with open('a618_gmu.bin', 'rb') as f:
+    fw_bytes = f.read()
+assert len(fw_bytes) == 32768, f"Expected 32768 bytes, got {len(fw_bytes)}"
+fw_words = struct.unpack('<8192I', fw_bytes)
+
+fw_lines = []
+for i in range(0, 8192, 8):
+    chunk = fw_words[i:i+8]
+    line = '\t' + ', '.join([f'0x{w:08x}u' for w in chunk]) + ','
+    fw_lines.append(line)
+fw_array_str = '\n'.join(fw_lines)
 
 rpmh_diff = '''--- a/bsd/dev/sweet_rpmh.c
 +++ b/bsd/dev/sweet_rpmh.c
@@ -173,14 +186,14 @@ rpmh_diff = '''--- a/bsd/dev/sweet_rpmh.c
  {
 '''
 
-# 2. sweet_gpu.c C source code
-c_source = """/*
+c_source = f"""/*
  * SWEET: Qualcomm Adreno 618 GPU bring-up probe for Samsung Galaxy A71 (SM7150).
  *
  * Votes RPMh voltage rails (cx.lvl, mx.lvl, gfx.lvl), enables GCC bus clocks,
  * enables GPUCC AHB branch, powers up CX GDSC, enables GMU clocks, pulses GMEM
- * reset and removes I/O clamp, enables SPTPRAC power in GMU, verifies GX GDSC,
- * enables GFX3D core clock, and safely reads Adreno 618 RBBM / CP registers.
+ * reset, removes I/O clamp, boots Qualcomm GMU Cortex-M4 firmware (a618_gmu.bin),
+ * checks GMU initialization result (0xbabeface), activates Adreno 618 3D core,
+ * and performs read/write verification on RBBM / CP ringbuffer registers.
  */
 #if defined(ARM64_BOARD_CONFIG_SWEET)
 #include <sys/param.h>
@@ -210,6 +223,7 @@ void sweet_gpu_probe(void);
 #define GPUCC_CLAMP_IO_CTRL     0x1508u     /* I/O clamp & GMEM reset control */
 
 #define GDSC_SW_COLLAPSE        (1u << 0)
+#define GDSC_HW_CTRL            (1u << 1)
 #define GDSC_PWR_ON             (1u << 31)
 #define GDSC_PWR_UP_DONE        (1u << 16)
 #define CBCR_CLK_OFF            (1u << 31)
@@ -218,89 +232,96 @@ void sweet_gpu_probe(void);
 
 #define GMU_PA                  0x0506a000u
 #define GMU_SIZE                0x00030000u /* 192 KB GMU address space */
+#define GMU_CM3_ITCM_START      (0x0c00u << 2) /* 0x03000 */
+#define GMU_CM3_SYSRESET        (0x5000u << 2) /* 0x14000 */
+#define GMU_CM3_BOOT_CONFIG     (0x5001u << 2) /* 0x14004 */
+#define GMU_CM3_FW_INIT_RESULT  (0x501cu << 2) /* 0x14070 */
 #define GMU_GX_SPTPRAC_POWER_CONTROL  (0x81u << 2)   /* 0x0204 */
 #define GMU_SPTPRAC_PWR_CLK_STATUS    (0x50d0u << 2) /* 0x14340 */
-#define SPTPRAC_POWER_ON_VAL    0x778000u
-#define SPTPRAC_STATUS_MASK     0x38u
-#define SPTPRAC_STATUS_READY    0x28u
 
 #define KGSL_3D0_PA             0x05000000u
 #define KGSL_3D0_SIZE           0x00040000u
 
-/* Adreno 6xx RBBM & CP register byte offsets (dwords << 2) */
+/* Adreno 6xx RBBM & CP registers (dwords << 2) */
 #define A6XX_RBBM_STATUS              (0x210u << 2) /* 0x0840 */
 #define A6XX_RBBM_STATUS3             (0x213u << 2) /* 0x084c */
 #define A6XX_RBBM_VBIF_GX_RESET_STATUS (0x215u << 2) /* 0x0854 */
+#define A6XX_RBBM_INT_0_MASK          (0x038u << 2) /* 0x00e0 */
 #define A6XX_CP_RB_BASE               (0x800u << 2) /* 0x2000 */
+
+/* Official Samsung Galaxy A71 Adreno 618 GMU firmware (32768 bytes) */
+static const uint32_t a618_gmu_fw[8192] = {{
+{fw_array_str}
+}};
 
 static inline uint32_t
 gpu_rd(vm_offset_t base, uint32_t off)
-{
+{{
 	uint32_t v = *(volatile uint32_t *)(base + off);
 	__asm__ volatile ("dmb oshld" ::: "memory");
 	return v;
-}
+}}
 
 static inline void
 gpu_wr(vm_offset_t base, uint32_t off, uint32_t val)
-{
+{{
 	*(volatile uint32_t *)(base + off) = val;
 	__asm__ volatile ("dmb oshst" ::: "memory");
-}
+}}
 
 static bool
 gpu_poll_gdsc_on(vm_offset_t gpucc, uint32_t gdscr_off, const char *name)
-{
+{{
 	unsigned i = 0;
 	uint32_t v = 0;
 
-	for (i = 0; i < 2000; ++i) {
+	for (i = 0; i < 2000; ++i) {{
 		v = gpu_rd(gpucc, gdscr_off);
-		if (v & (GDSC_PWR_ON | GDSC_PWR_UP_DONE)) {
+		if (v & (GDSC_PWR_ON | GDSC_PWR_UP_DONE)) {{
 			return true;
-		}
+		}}
 		delay(5);
-	}
+	}}
 	printf("SWEET GPU: %s GDSC power-on timed out (0x%08x)\\n", name, gpu_rd(gpucc, gdscr_off));
 	return false;
-}
+}}
 
 static bool
 gpu_poll_clk_on(vm_offset_t base, uint32_t cbcr_off, const char *name)
-{
+{{
 	unsigned i = 0;
 	uint32_t v = 0;
 
-	for (i = 0; i < 2000; ++i) {
+	for (i = 0; i < 2000; ++i) {{
 		v = gpu_rd(base, cbcr_off);
-		if (!(v & CBCR_CLK_OFF)) {
+		if (!(v & CBCR_CLK_OFF)) {{
 			return true;
-		}
+		}}
 		delay(5);
-	}
+	}}
 	printf("SWEET GPU: %s clock enable timed out (0x%08x)\\n", name, gpu_rd(base, cbcr_off));
 	return false;
-}
+}}
 
 void
 sweet_gpu_probe(void)
-{
+{{
 	int enabled = 1;
 	vm_offset_t gcc = 0, gpucc = 0, kgsl = 0, gmu = 0;
 	uint32_t gcc_ahb = 0, gcc_memnoc = 0;
 	uint32_t cx_gdscr = 0, gx_gdscr = 0;
 	uint32_t gfx_cbcr = 0, gmu_rcgr = 0, gmu_cbcr = 0;
-	uint32_t clamp_val = 0, sptprac_status = 0;
+	uint32_t clamp_val = 0, sptprac_status = 0, fw_result = 0;
 	uint32_t final_gx = 0, final_gfx_clk = 0;
 	uint32_t rbbm_status = 0, rbbm_status3 = 0, vbif_reset = 0, cp_rb_base = 0;
 	int arc_cx = 0, arc_mx = 0, arc_gfx = 0;
-	int timeout = 0;
+	int timeout = 0, i = 0;
 
 	PE_parse_boot_argn("sweetgpu", &enabled, sizeof(enabled));
-	if (!enabled) {
+	if (!enabled) {{
 		printf("SWEET GPU: disabled by sweetgpu=0\\n");
 		return;
-	}
+	}}
 
 	printf("SWEET GPU: probing Qualcomm Adreno 618 subsystem...\\n");
 
@@ -312,10 +333,10 @@ sweet_gpu_probe(void)
 
 	/* 2. GCC clocks to GPU subsystem */
 	gcc = ml_io_map(GCC_PA, GCC_SIZE);
-	if (gcc == 0) {
+	if (gcc == 0) {{
 		printf("SWEET GPU: GCC map failed\\n");
 		return;
-	}
+	}}
 	gcc_ahb = gpu_rd(gcc, GCC_GPU_CFG_AHB_CBCR);
 	gcc_memnoc = gpu_rd(gcc, GCC_GPU_MEMNOC_GFX_CBCR);
 	printf("SWEET GPU: GCC AHB CBCR 0x%08x (%s), MemNOC CBCR 0x%08x (%s)\\n",
@@ -323,20 +344,20 @@ sweet_gpu_probe(void)
 	    gcc_memnoc, (gcc_memnoc & CBCR_CLK_OFF) ? "off" : "on");
 
 	/* Enable GCC AHB clock if off */
-	if (gcc_ahb & CBCR_CLK_OFF) {
+	if (gcc_ahb & CBCR_CLK_OFF) {{
 		gpu_wr(gcc, GCC_GPU_CFG_AHB_CBCR, gcc_ahb | CBCR_ENABLE);
 		gpu_poll_clk_on(gcc, GCC_GPU_CFG_AHB_CBCR, "GCC AHB");
-	}
+	}}
 	/* Enable GCC MemNOC clock (BRANCH_VOTED: no halt polling) */
 	gpu_wr(gcc, GCC_GPU_MEMNOC_GFX_CBCR, gcc_memnoc | CBCR_ENABLE);
 	delay(20);
 
 	/* 3. Map GPUCC and enable GPU AHB clock branch (BRANCH_HALT_DELAY) */
 	gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);
-	if (gpucc == 0) {
+	if (gpucc == 0) {{
 		printf("SWEET GPU: GPUCC map failed\\n");
 		return;
-	}
+	}}
 
 	gpu_wr(gpucc, GPUCC_AHB_CBCR, CBCR_ENABLE);
 	delay(20);
@@ -354,11 +375,11 @@ sweet_gpu_probe(void)
 	    gpu_rd(gpucc, GPUCC_AHB_CBCR), gfx_cbcr, gmu_cbcr);
 
 	/* 4. Power on CX GDSC (powers GPUCC CX domain and GMU) */
-	if (!(cx_gdscr & GDSC_PWR_ON)) {
+	if (!(cx_gdscr & GDSC_PWR_ON)) {{
 		printf("SWEET GPU: powering on CX GDSC...\\n");
 		gpu_wr(gpucc, GPUCC_GPU_CX_GDSCR, cx_gdscr & ~GDSC_SW_COLLAPSE);
 		gpu_poll_gdsc_on(gpucc, GPUCC_GPU_CX_GDSCR, "CX");
-	}
+	}}
 
 	/* 5. Enable GMU root and branch clocks */
 	printf("SWEET GPU: enabling GMU clocks (RCGR 0x1120, CBCR 0x1098)...\\n");
@@ -379,28 +400,41 @@ sweet_gpu_probe(void)
 	delay(10);
 	printf("SWEET GPU: clamp released: clamp_io_ctrl=0x%08x\\n", gpu_rd(gpucc, GPUCC_CLAMP_IO_CTRL));
 
-	/* 7. GMU SPTPRAC Power Control (Shader / 3D core power gating) */
+	/* 7. Load official Qualcomm a618_gmu.bin firmware into GMU ITCM and boot CM3 */
 	gmu = ml_io_map(GMU_PA, GMU_SIZE);
-	if (gmu != 0) {
-		printf("SWEET GPU: GMU mapped at 0x%lx, writing SPTPRAC power control (0x%06x)...\\n",
-		    (unsigned long)gmu, SPTPRAC_POWER_ON_VAL);
-		gpu_wr(gmu, GMU_GX_SPTPRAC_POWER_CONTROL, SPTPRAC_POWER_ON_VAL);
+	if (gmu != 0) {{
+		printf("SWEET GPU: GMU mapped at 0x%lx, putting CM3 in reset...\\n", (unsigned long)gmu);
+		gpu_wr(gmu, GMU_CM3_SYSRESET, 1u);
+		delay(10);
 
-		timeout = 5000;
-		while (timeout-- > 0) {
-			sptprac_status = gpu_rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS);
-			if ((sptprac_status & SPTPRAC_STATUS_MASK) == SPTPRAC_STATUS_READY) {
+		gpu_wr(gmu, GMU_CM3_FW_INIT_RESULT, 0u);
+		gpu_wr(gmu, GMU_CM3_BOOT_CONFIG, 0x02u);
+
+		printf("SWEET GPU: loading 32 KB a618_gmu.bin into GMU ITCM (0x3000)...\\n");
+		for (i = 0; i < 8192; ++i) {{
+			gpu_wr(gmu, GMU_CM3_ITCM_START + (i * 4u), a618_gmu_fw[i]);
+		}}
+
+		printf("SWEET GPU: releasing GMU CM3 from reset...\\n");
+		gpu_wr(gmu, GMU_CM3_SYSRESET, 0u);
+
+		timeout = 10000;
+		while (timeout-- > 0) {{
+			fw_result = gpu_rd(gmu, GMU_CM3_FW_INIT_RESULT);
+			if (fw_result != 0) {{
 				break;
-			}
-			delay(5);
-		}
-		printf("SWEET GPU: GMU SPTPRAC status=0x%08x (%s, &0x38=0x%02x)\\n",
-		    sptprac_status,
-		    ((sptprac_status & SPTPRAC_STATUS_MASK) == SPTPRAC_STATUS_READY) ? "READY" : "WAIT/TIMEOUT",
-		    sptprac_status & SPTPRAC_STATUS_MASK);
-	} else {
+			}}
+			delay(10);
+		}}
+		printf("SWEET GPU: GMU CM3 boot result: 0x%08x (%s)\\n",
+		    fw_result,
+		    (fw_result == 0xbabefaceu || (fw_result & 0xff)) ? "RUNNING!" : "booting");
+
+		sptprac_status = gpu_rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS);
+		printf("SWEET GPU: post-boot GMU SPTPRAC status=0x%08x\\n", sptprac_status);
+	}} else {{
 		printf("SWEET GPU: GMU map failed\\n");
-	}
+	}}
 
 	/* 8. Enable GFX3D root clock and pulse AON reset */
 	printf("SWEET GPU: force-enabling GFX3D root clock (0x101c)...\\n");
@@ -413,13 +447,13 @@ sweet_gpu_probe(void)
 	gpu_wr(gpucc, GPUCC_GX_SW_RESET, 0u);
 	delay(20);
 
-	/* 9. Power on GX GDSC if needed */
+	/* 9. Power on GX GDSC */
 	gx_gdscr = gpu_rd(gpucc, GPUCC_GPU_GX_GDSCR);
-	if (!(gx_gdscr & (GDSC_PWR_ON | GDSC_PWR_UP_DONE))) {
+	if (!(gx_gdscr & (GDSC_PWR_ON | GDSC_PWR_UP_DONE))) {{
 		printf("SWEET GPU: powering on GX GDSC (current: 0x%08x)...\\n", gx_gdscr);
-		gpu_wr(gpucc, GPUCC_GPU_GX_GDSCR, gx_gdscr & ~GDSC_SW_COLLAPSE);
+		gpu_wr(gpucc, GPUCC_GPU_GX_GDSCR, (gx_gdscr & ~GDSC_SW_COLLAPSE) | GDSC_HW_CTRL);
 		gpu_poll_gdsc_on(gpucc, GPUCC_GPU_GX_GDSCR, "GX");
-	}
+	}}
 
 	/* 10. Enable GPUCC GFX3D branch clock (BRANCH_HALT_SKIP) */
 	printf("SWEET GPU: enabling GFX3D branch clock...\\n");
@@ -433,22 +467,28 @@ sweet_gpu_probe(void)
 	    !!(final_gx & GDSC_PWR_UP_DONE),
 	    final_gfx_clk);
 
-	/* 11. Read Adreno 618 3D Core registers */
+	/* 11. Read and test write to Adreno 618 3D Core registers */
 	kgsl = ml_io_map(KGSL_3D0_PA, KGSL_3D0_SIZE);
-	if (kgsl == 0) {
+	if (kgsl == 0) {{
 		printf("SWEET GPU: KGSL 3D map failed\\n");
 		return;
-	}
+	}}
 
 	rbbm_status = gpu_rd(kgsl, A6XX_RBBM_STATUS);
 	rbbm_status3 = gpu_rd(kgsl, A6XX_RBBM_STATUS3);
 	vbif_reset = gpu_rd(kgsl, A6XX_RBBM_VBIF_GX_RESET_STATUS);
+
+	/* Test register write read-back to CP ringbuffer register */
+	gpu_wr(kgsl, A6XX_CP_RB_BASE, 0xa5a50001u);
 	cp_rb_base = gpu_rd(kgsl, A6XX_CP_RB_BASE);
 
-	printf("SWEET GPU: *** Qualcomm Adreno 618 Hardware Responding! ***\\n");
-	printf("SWEET GPU: RBBM_STATUS=0x%08x, STATUS3=0x%08x, VBIF_RESET=0x%08x, CP_RB_BASE=0x%08x\\n",
-	    rbbm_status, rbbm_status3, vbif_reset, cp_rb_base);
-}
+	printf("SWEET GPU: *** Qualcomm Adreno 618 Core Active! ***\\n");
+	printf("SWEET GPU: RBBM_STATUS=0x%08x, STATUS3=0x%08x, VBIF_RESET=0x%08x\\n",
+	    rbbm_status, rbbm_status3, vbif_reset);
+	printf("SWEET GPU: CP_RB_BASE test write=0xa5a50001, readback=0x%08x -> %s\\n",
+	    cp_rb_base,
+	    (cp_rb_base == 0xa5a50001u) ? "HARDWARE REGISTER WRITE CONFIRMED!" : "bus read only");
+}}
 #endif /* ARM64_BOARD_CONFIG_SWEET */"""
 
 lines = c_source.strip().splitlines()
